@@ -87,10 +87,11 @@ export default function HomePage() {
     }
   };
 
-  // ── Agent 对话 ──
+  // ── Agent 对话（带记忆 + 小说上下文） ──
 
   const handleChatSend = useCallback(
     async (message: string) => {
+      // 立即显示用户消息
       setChatMessages((prev) => [...prev, { role: "user", content: message }]);
       setChatLoading(true);
       setHasScriptUpdate(false);
@@ -102,6 +103,9 @@ export default function HomePage() {
           body: JSON.stringify({
             message,
             script: editor.script ?? undefined,
+            // 传历史记录（最新 20 条）+ 原始小说
+            history: chatMessages,
+            novelText: novelText || undefined,
           }),
         });
 
@@ -144,7 +148,7 @@ export default function HomePage() {
         setChatLoading(false);
       }
     },
-    [editor]
+    [editor, chatMessages, novelText]
   );
 
   const hasResult = editor.script || rawYaml;
@@ -206,10 +210,9 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* 结果区域：左右分栏（桌面端）/ 上下分栏（移动端） */}
+      {/* 结果区域 */}
       {hasResult && !loading && (
         <div className="mt-8 flex flex-col xl:flex-row gap-6 max-w-[90rem] mx-auto">
-          {/* 左侧：可编辑剧本预览 */}
           <div className="flex-1 min-w-0">
             <ScriptPreview
               script={editor.script}
@@ -225,8 +228,6 @@ export default function HomePage() {
               onMoveBeat={editor.moveBeat}
             />
           </div>
-
-          {/* 右侧：实时 YAML 侧边栏 */}
           <div className="xl:w-96 shrink-0">
             <div className="xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)]">
               <YamlPanel
@@ -238,13 +239,12 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* ── Agent 对话面板（固定在页面底部） ── */}
+      {/* ── Agent 对话面板 ── */}
       <ChatPanel
         isOpen={chatOpen}
         onToggle={() => {
           setChatOpen(!chatOpen);
           if (hasScriptUpdate && !chatOpen) {
-            // 展开时清除更新提示
             setTimeout(() => setHasScriptUpdate(false), 3000);
           }
         }}

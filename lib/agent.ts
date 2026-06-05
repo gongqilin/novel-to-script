@@ -13,11 +13,17 @@ import { dump, load } from "js-yaml";
 import { generateScriptTool } from "./tools/generateScriptTool";
 import type { Script } from "@/types";
 
+// ─── 类型 ─────────────────────────────────────────────────────────────────────
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
 
 /**
  * 从 LLM 响应文本中提取 YAML 代码块并解析为 Script 对象
- * 用于从 Agent 最终回复中获取更新后的剧本
  */
 function extractScriptFromText(text: string): Script | null {
   const yamlMatch = text.match(/```yaml\s*([\s\S]*?)```/);
@@ -33,11 +39,9 @@ function extractScriptFromText(text: string): Script | null {
  * 安全获取 AIMessage 中的 tool_calls（兼容不同 langchain 版本）
  */
 function getToolCalls(response: AIMessage): any[] {
-  // 直接属性（较新版本）
   if ((response as any).tool_calls?.length > 0) {
     return (response as any).tool_calls;
   }
-  // additional_kwargs 中（较旧版本）
   if ((response as any).additional_kwargs?.tool_calls?.length > 0) {
     return (response as any).additional_kwargs.tool_calls.map((tc: any) => ({
       id: tc.id,
@@ -48,11 +52,16 @@ function getToolCalls(response: AIMessage): any[] {
   return [];
 }
 
+/** 保留最近的消息数量（防止上下文超长） */
+const MAX_HISTORY = 20;
+
 // ─── Agent 主函数 ─────────────────────────────────────────────────────────────
 
 export async function runAgent(
   message: string,
-  currentScript?: Script | null
+  currentScript?: Script | null,
+  history?: ChatMessage[],
+  novelText?: string
 ): Promise<{ response: string; script: Script | null }> {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   const baseURL = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
@@ -63,7 +72,6 @@ export async function runAgent(
   }
 
   // 初始化 ChatOpenAI 实例，指向 DeepSeek
-  // 注意：@langchain/openai v1.x 使用 apiKey 而非 openAIApiKey
   const model = new ChatOpenAI({
     model: modelName,
     temperature: 0.3,
@@ -73,7 +81,7 @@ export async function runAgent(
     },
   });
 
-  // 绑定工具，让模型可以调用 generate_script
+  // 绑定工具
   const modelWithTools = model.bindTools([generateScriptTool]);
 
   // 系统提示词
@@ -82,10 +90,23 @@ export async function runAgent(
 如果用户要求生成剧本，务必调用 generate_script 工具，并在调用后向用户简要说明生成结果。
 如果需要返回完整的剧本内容，请使用 \`\`\`yaml 代码块包裹。`;
 
-  // 构建消息列表
+  // ── 构建消息链 ──
   const messages: (SystemMessage | HumanMessage | AIMessage | ToolMessage)[] = [
     new SystemMessage(SYSTEM_PROMPT),
   ];
+
+  // 注入原始小说上下文（如果有）
+  if (novelText) {
+    const truncated =
+      novelText.length > 80000
+        ? novelText.slice(0, 80000) + "\n\n（小说内容过长，已截取前 80000 字符）"
+        : novelText;
+    messages.push(
+      new SystemMessage(
+        `用户上传了以下小说文本（你可以参考其中的情节、角色和设定）：\n\n${truncated}`
+      )
+    );
+  }
 
   // 注入当前编辑中的剧本上下文
   if (currentScript) {
@@ -105,9 +126,20 @@ export async function runAgent(
     }
   }
 
+  // 注入对话历史（最近 MAX_HISTORY 条）
+  const recentHistory = history ? history.slice(-MAX_HISTORY) : [];
+  for (const msg of recentHistory) {
+    if (msg.role === "user") {
+      messages.push(new HumanMessage(msg.content));
+    } else {
+      messages.push(new AIMessage(msg.content));
+    }
+  }
+
+  // 当前用户消息
   messages.push(new HumanMessage(message));
 
-  // ── Agent 循环（最多 3 轮工具调用，防止无限循环） ──
+  // ── Agent 循环（最多 3 轮工具调用） ──
   let finalResponse = "";
   let updatedScript: Script | null = null;
 
@@ -117,19 +149,16 @@ export async function runAgent(
 
     const toolCalls = getToolCalls(response);
 
-    // 无工具调用 → Agent 给出最终回复
     if (toolCalls.length === 0) {
       finalResponse =
         typeof response.content === "string"
           ? response.content
           : JSON.stringify(response.content);
-      // 尝试从回复中提取剧本 YAML
       const parsed = extractScriptFromText(finalResponse);
       if (parsed) updatedScript = parsed;
       break;
     }
 
-    // 执行每个工具调用，将结果注入对话
     for (const toolCall of toolCalls) {
       if (toolCall.name === "generate_script") {
         try {
@@ -141,11 +170,10 @@ export async function runAgent(
               tool_call_id: toolCall.id,
             })
           );
-          // 尝试解析生成的 YAML 为 Script 对象
           try {
             updatedScript = load(yamlResult) as Script;
           } catch {
-            // 解析失败不阻塞，Agent 仍可继续对话
+            // 解析失败不阻塞
           }
         } catch (err) {
           messages.push(
@@ -161,7 +189,6 @@ export async function runAgent(
     }
   }
 
-  // 兜底：循环结束仍未获得文本回复
   if (!finalResponse) {
     const last = messages[messages.length - 1] as AIMessage;
     finalResponse =
