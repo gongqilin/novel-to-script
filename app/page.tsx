@@ -1,12 +1,22 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { dump } from "js-yaml";
 import NovelInput from "./components/NovelInput";
 import ScriptPreview from "./components/ScriptPreview";
 import YamlPanel from "./components/YamlPanel";
+import ChatPanel from "./components/ChatPanel";
 import { useScriptEditor } from "@/lib/useScriptEditor";
 import type { Script } from "@/types";
+
+// ─── 对话消息类型 ──────────────────────────────────────────────────────────────
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+// ─── 主页面 ────────────────────────────────────────────────────────────────────
 
 export default function HomePage() {
   const [novelText, setNovelText] = useState("");
@@ -17,6 +27,12 @@ export default function HomePage() {
   // 编辑状态 Hook
   const editor = useScriptEditor(null);
 
+  // 对话面板状态
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [hasScriptUpdate, setHasScriptUpdate] = useState(false);
+
   // 实时生成编辑后的 YAML
   const editedYaml = useMemo(() => {
     if (!editor.script) return "";
@@ -26,6 +42,8 @@ export default function HomePage() {
       return "";
     }
   }, [editor.script]);
+
+  // ── 生成剧本（原有流程） ──
 
   const handleSubmit = async () => {
     if (!novelText.trim()) {
@@ -55,7 +73,6 @@ export default function HomePage() {
       if (json.data) {
         editor.setScript(json.data as Script);
       } else {
-        // 解析失败但有原始 yaml
         editor.setScript(null);
       }
       if (json.yaml) {
@@ -70,10 +87,70 @@ export default function HomePage() {
     }
   };
 
+  // ── Agent 对话 ──
+
+  const handleChatSend = useCallback(
+    async (message: string) => {
+      setChatMessages((prev) => [...prev, { role: "user", content: message }]);
+      setChatLoading(true);
+      setHasScriptUpdate(false);
+
+      try {
+        const res = await fetch("/api/agent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message,
+            script: editor.script ?? undefined,
+          }),
+        });
+
+        const json = await res.json();
+
+        if (!json.success) {
+          setChatMessages((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              content: `抱歉，处理请求时出错：${json.error || "未知错误"}`,
+            },
+          ]);
+          return;
+        }
+
+        const { message: reply, script: updatedScript } = json.data;
+
+        setChatMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: reply || "处理完成。" },
+        ]);
+
+        // 如果 Agent 返回了更新后的剧本，同步到编辑器
+        if (updatedScript) {
+          editor.setScript(updatedScript as Script);
+          setHasScriptUpdate(true);
+        }
+      } catch (err) {
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `网络请求失败：${
+              err instanceof Error ? err.message : "请检查网络连接"
+            }`,
+          },
+        ]);
+      } finally {
+        setChatLoading(false);
+      }
+    },
+    [editor]
+  );
+
   const hasResult = editor.script || rawYaml;
 
   return (
-    <main className="min-h-screen py-8 px-4">
+    <main className="min-h-screen py-8 px-4 pb-20">
       {/* 标题 */}
       <header className="text-center mb-10 max-w-4xl mx-auto">
         <h1 className="text-3xl font-bold text-gray-900 mb-2">
@@ -160,6 +237,22 @@ export default function HomePage() {
           </div>
         </div>
       )}
+
+      {/* ── Agent 对话面板（固定在页面底部） ── */}
+      <ChatPanel
+        isOpen={chatOpen}
+        onToggle={() => {
+          setChatOpen(!chatOpen);
+          if (hasScriptUpdate && !chatOpen) {
+            // 展开时清除更新提示
+            setTimeout(() => setHasScriptUpdate(false), 3000);
+          }
+        }}
+        onSend={handleChatSend}
+        loading={chatLoading}
+        messages={chatMessages}
+        hasScriptUpdate={hasScriptUpdate}
+      />
     </main>
   );
 }
