@@ -1,12 +1,7 @@
-// POST /api/agent
-// 接收用户消息、对话历史、当前剧本、原始小说文本
-// Agent 可自主决定是否调用 generate_script 工具
-
 import { NextResponse } from "next/server";
 import { runAgent } from "@/lib/agent";
 import type { Script } from "@/types";
 
-/** 输入消息最大长度 */
 const MAX_MESSAGE_LENGTH = 50000;
 
 export async function POST(request: Request) {
@@ -19,7 +14,6 @@ export async function POST(request: Request) {
       novelText?: string;
     };
 
-    // 参数校验
     if (!message || typeof message !== "string") {
       return NextResponse.json(
         { success: false, error: "缺少消息参数" },
@@ -41,7 +35,6 @@ export async function POST(request: Request) {
       );
     }
 
-    // 调用 Agent（传入历史 + 小说文本）
     const result = await runAgent(
       message,
       script ?? null,

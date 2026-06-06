@@ -1,7 +1,3 @@
-// Agent 工具：将小说文本转换为剧本 YAML
-// 封装现有的 generateScript 函数，供 LangChain Agent 调用
-// 使用 DynamicStructuredTool + zod 定义输入 schema
-
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import { generateScript } from "@/lib/llm";
@@ -15,8 +11,7 @@ export const generateScriptTool = new DynamicStructuredTool({
   }),
   func: async ({ text }) => {
     try {
-      const yaml = await generateScript(text);
-      return yaml;
+      return await generateScript(text);
     } catch (err) {
       return `剧本生成失败: ${err instanceof Error ? err.message : "未知错误"}`;
     }
